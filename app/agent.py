@@ -6,7 +6,7 @@ from app.openai_client import (
 )
 
 from app.tool_definitions import get_openai_tools
-
+import json
 
 SYSTEM_INSTRUCTIONS = """
 You are a financial calculation assistant.
@@ -42,7 +42,7 @@ def send_financial_question(question: str):
     model = get_openai_model()        # All the financial calculation tools available for the model to use.
 
     # Load available Finance tools.
-    tools = get_openai_tools()
+    tools = get_openai_tools()          # It will return all the available tools for financial calculations, including ROI, Profit, and Compound Interest.
 
     # Send the question and tool definitions to OpenAI
     response = client.responses.create(
@@ -83,29 +83,77 @@ def display_response(response) -> None:
 
     print("\nResponse ID:", response.id)
     print("Response status:", response.status)
+    
+    try:
+        tool_calls = extract_tool_calls(response)
+    
+        if tool_calls:    
+            print("\nOpenAI requested the following tool(s):")
+    
+            for tool_call in tool_calls:            
+                print("\nTool name:", tool_call["tool_name"])
+                print("Call ID:", tool_call["call_id"])
+                print("Raw arguments:", json.dumps(tool_call["arguments"], indent=4))         # print the arguments in a pretty JSON format for better readability
+    
+        else:    
+            output_text = getattr(response, "output_text", None)    
+            if output_text:
+                print("\nOpenAI response:")
+                print(output_text)    
+            else:
+                print("\nNo function call or text response was returned.")
+    except ValueError as exc:
+        print(f"\nError processing function calls as Tool extraction failed: {exc}")
 
-    function_calls = get_function_calls(response)
+def extract_tool_call(call) -> dict:
+    """
+    Extract the tool name, arguments, and call ID
+    from an OpenAI function-call object.
 
-    if function_calls:
+    Returns a dictionary containing the extracted data.
+    """
 
-        print("\nOpenAI requested the following tool(s):")
+    # Verify that this is a function call.
+    if getattr(call, "type", None) != "function_call":
+        raise ValueError("Invalid response: expected a function call.")
 
-        for call in function_calls:
+    # Extract the function name.
+    tool_name = getattr(call, "name", None)
 
-            print("\nTool name:", call.name)
-            print("Call ID:", call.call_id)
-            print("Raw arguments:", call.arguments)
+    if not isinstance(tool_name, str) or not tool_name.strip():
+        raise ValueError("Function call is missing a valid tool name.")
 
-    else:
+    # Extract the unique call ID.
+    call_id = getattr(call, "call_id", None)
 
-        output_text = getattr(response, "output_text", None)
+    if not isinstance(call_id, str) or not call_id.strip():
+        raise ValueError("Function call is missing a valid call ID.")
 
-        if output_text:
-            print("\nOpenAI response:")
-            print(output_text)
+    # Extract and parse JSON arguments.
+    raw_arguments = getattr(call, "arguments", None)
 
-        else:
-            print("\nNo function call or text response was returned.")
+    if not isinstance(raw_arguments, str):
+        raise ValueError("Function call arguments must be a JSON string.")
+
+    try:
+        arguments = json.loads(raw_arguments)
+
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Invalid JSON arguments for tool '{tool_name}'."
+        ) from exc
+
+    # Tool arguments must be a JSON object.
+    if not isinstance(arguments, dict):
+        raise ValueError(
+            f"Arguments for tool '{tool_name}' must be a JSON object."
+        )
+
+    return {
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "call_id": call_id,
+    }
 
 
 def main() -> None:
@@ -133,6 +181,20 @@ def main() -> None:
     except ValueError as exc:
         print(f"\nInput error: {exc}")
 
+def extract_tool_calls(response) -> list[dict]:
+    """
+    Extract tool call information from a list of OpenAI function-call objects.
+
+    Returns a list of dictionaries containing tool name, arguments, and call ID.
+    """
+
+    function_call = get_function_calls(response)
+    
+    return [
+        extract_tool_call(call)
+        for call in function_call
+    ]
+    
 
 if __name__ == "__main__":
     main()

@@ -1,7 +1,9 @@
 import json
 from types import SimpleNamespace
 
-from app.agent import get_function_calls
+import pytest
+
+from app.agent import get_function_calls, extract_tool_calls, extract_tool_call
 
 
 def test_detect_single_function_call():
@@ -112,3 +114,109 @@ def test_missing_output_returns_empty_list():
     calls = get_function_calls(response)
 
     assert calls == []
+    
+def test_extract_tool_call_successfully():
+    """Extract tool name, arguments, and call ID."""
+
+    call = SimpleNamespace(
+        type="function_call",
+        name="calculate_roi",
+        call_id="call_123",
+        arguments='{"investment": 10000, "profit": 2500}',
+    )
+
+    result = extract_tool_call(call)
+
+    assert result["tool_name"] == "calculate_roi"
+    assert result["arguments"] == {
+        "investment": 10000,
+        "profit": 2500,
+    }
+    assert result["call_id"] == "call_123"
+    
+def test_extract_multiple_tool_calls_successfully():
+    """Extract multiple tool calls from a response."""
+
+    roi_call = SimpleNamespace(
+        type="function_call",
+        name="calculate_roi",
+        call_id="call_123",
+        arguments='{"investment": 10000, "profit": 2500}',
+    )
+    profit_call = SimpleNamespace(
+        type="function_call",
+        name="calculate_profit",
+        call_id="call_456",
+        arguments='{"revenue": 20000, "cost": 12000}',
+    )
+    response = SimpleNamespace(
+        output=[roi_call, profit_call]
+    )
+
+    tool_calls = extract_tool_calls(response)
+
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["tool_name"] == "calculate_roi"
+    assert tool_calls[1]["tool_name"] == "calculate_profit"
+    
+def test_extract_tool_rejects_invalid_json():
+    """Invalid JSON in arguments should raise a ValueError."""
+
+    call = SimpleNamespace(
+        type="function_call",
+        name="calculate_roi",
+        call_id="call_123",
+        arguments='{"investment": 10000, "profit": }',  # Missing closing brace
+    )
+
+    with pytest.raises(ValueError, match="Invalid JSON arguments for tool 'calculate_roi'") as exc_info:
+        extract_tool_call(call)
+        
+def test_extract_tool_call_rejects_non_object_arguments():
+    """Arguments must be a JSON object, not an array or other type."""
+
+    call = SimpleNamespace(
+        type="function_call",
+        name="calculate_roi",
+        call_id="call_123",
+        arguments='[10000, 2500]',  # JSON array instead of object
+    )
+
+    with pytest.raises(ValueError, match="JSON object") as exc_info:
+        extract_tool_call(call)
+        
+def test_extract_tool_call_rejects_missing_name_or_call_id():
+    """Missing tool name or call ID should raise a ValueError."""
+
+    # Missing name
+    call_missing_name = SimpleNamespace(
+        type="function_call",
+        call_id="call_123",
+        arguments='{"investment": 10000, "profit": 2500}',
+    )
+
+    with pytest.raises(ValueError, match="missing a valid tool name") as exc_info:
+        extract_tool_call(call_missing_name)
+
+    # Missing call ID
+    call_missing_id = SimpleNamespace(
+        type="function_call",
+        name="calculate_roi",
+        arguments='{"investment": 10000, "profit": 2500}',
+    )
+
+    with pytest.raises(ValueError, match="missing a valid call ID") as exc_info:
+        extract_tool_call(call_missing_id)
+        
+def test_extract_tool_call_rejects_invalid_type():
+    """If the call type is not 'function_call', it should raise a ValueError."""
+
+    call_invalid_type = SimpleNamespace(
+        type="message",      # Not a function call
+        name="calculate_roi",
+        call_id="call_123",
+        arguments='{"investment": 10000, "profit": 2500}',
+    )
+
+    with pytest.raises(ValueError, match="expected a function call") as exc_info:
+        extract_tool_call(call_invalid_type)
