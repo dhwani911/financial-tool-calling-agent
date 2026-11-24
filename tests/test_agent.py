@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.agent import get_function_calls, extract_tool_calls, extract_tool_call, validate_tool_arguments
+from app.agent import get_function_calls, extract_tool_calls, extract_tool_call, validate_tool_arguments, \
+    validate_and_execute_tool
 
 
 def test_detect_single_function_call():
@@ -338,3 +339,103 @@ def test_validate_unsupported_tool():
 
     with pytest.raises(ValueError, match="Unsupported tool name"):
         validate_tool_arguments(tool_call)
+        
+def test_execute_roi_tool():
+    """Execute the ROI tool with valid arguments."""
+    
+    tool_call = {
+        "tool_name": "calculate_roi",
+        "arguments": {
+            "investment": 10000,
+            "profit": 2500,
+        },
+        "call_id": "call_123",
+    }
+
+    result = validate_and_execute_tool(tool_call)    
+
+    assert result["tool_name"] == "calculate_roi"
+    assert result["result"] == 25.0
+    assert result["call_id"] == "call_123"
+    
+def test_execute_profit_tool():
+    """Execute the Profit tool with valid arguments."""
+    
+    tool_call = {
+        "tool_name": "calculate_profit",
+        "arguments": {
+            "revenue": 20000,
+            "cost": 12000,
+        },
+        "call_id": "call_456",
+    }
+
+    result = validate_and_execute_tool(tool_call)    
+
+    assert result["tool_name"] == "calculate_profit"
+    assert result["result"] == 8000
+    assert result["call_id"] == "call_456"
+    
+def test_execute_compound_interest_tool():
+    """Execute the Compound Interest tool with valid arguments."""
+    
+    tool_call = {
+        "tool_name": "calculate_compound_interest",
+        "arguments": {
+            "principal": 10000,
+            "annual_rate": 5,
+            "years": 3,
+        },
+        "call_id": "call_789",
+    }
+
+    result = validate_and_execute_tool(tool_call)    
+
+    assert result["tool_name"] == "calculate_compound_interest"
+    assert round(result["result"], 2) == 11576.25
+    assert result["call_id"] == "call_789"
+    
+def test_execute_unsupported_tool():
+    """Executing an unsupported tool should raise a ValueError."""
+    
+    tool_call = {
+        "tool_name": "unsupported_tool",
+        "arguments": {
+            "some_param": 123,
+        },
+        "call_id": "call_000",
+    }
+
+    with pytest.raises(ValueError, match="Unsupported tool name"):
+        validate_and_execute_tool(tool_call)
+        
+def test_execute_invalid_roi_arguments():
+    """Executing ROI tool with invalid arguments should raise a ValidationError."""
+    
+    tool_call = {
+        "tool_name": "calculate_roi",
+        "arguments": {
+            "investment": -10000,  # Invalid negative investment
+            "profit": 2500,
+        },
+        "call_id": "call_123",
+    }
+
+    with pytest.raises(ValidationError):
+        validate_and_execute_tool(tool_call)
+        
+def test_execute_unexpected_arguments():
+    """Executing a tool with unexpected arguments should raise a ValidationError."""
+    
+    tool_call = {
+        "tool_name": "calculate_profit",
+        "arguments": {
+            "revenue": 20000,
+            "cost": 12000,
+            "unexpected_param": 42,  # Extra unexpected parameter
+        },
+        "call_id": "call_456",
+    }
+
+    with pytest.raises(ValidationError):
+        validate_and_execute_tool(tool_call)

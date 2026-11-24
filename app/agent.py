@@ -8,6 +8,7 @@ from app.tool_definitions import get_openai_tools
 import json
 from pydantic import ValidationError
 from app.schemas import ROIInput, ProfitInput, CompoundInterestInput
+from app.tools import calculate_roi, calculate_profit, calculate_compound_interest
 
 SYSTEM_INSTRUCTIONS = """
 You are a financial calculation assistant.
@@ -26,6 +27,12 @@ TOOL_SCHEMAS = {
     "calculate_roi": ROIInput,
     "calculate_profit": ProfitInput,
     "calculate_compound_interest": CompoundInterestInput,
+}
+
+TOOL_REGISTRY = {
+    "calculate_roi": calculate_roi,
+    "calculate_profit": calculate_profit,
+    "calculate_compound_interest": calculate_compound_interest,
 }
 
 def send_financial_question(question: str):
@@ -187,6 +194,41 @@ def validate_tool_arguments(tool_call: dict) -> dict:
     validated_arguments = schema.model_validate(arguments)          # model_validate() is a Pydantic method that validates the Pydantic model instance.
 
     return {"tool_name": tool_name, "arguments": validated_arguments.model_dump(), "call_id": tool_call.get("call_id")}       # model_dump() generates a dictionary representation of the model.
+
+def execute_tool(tool_call: dict) -> dict:
+    """
+    Execute the validated Financial tool.
+
+    Args:
+        tool_call: Validated tool call dict containing tool_name, validated arguments, and call_id.
+
+    Returns:
+        Dictionary containing the tool name, result, and call ID.
+
+    Raises:
+        ValueError: If the tool name is unsupported or execution fails.
+    """
+
+    tool_name = tool_call.get("tool_name")
+    arguments = tool_call.get("arguments")
+    call_id = tool_call.get("call_id")
+
+    if tool_name not in TOOL_REGISTRY:
+        raise ValueError(f"Unsupported tool name: {tool_name}")
+
+    if not isinstance(arguments, dict):
+        raise ValueError(f"Arguments for tool '{tool_name}' must be a dictionary.")
+    
+    function = TOOL_REGISTRY[tool_name]
+    result = function(**arguments)
+    
+    return {"tool_name": tool_name, "result": result, "call_id": call_id}
+
+def validate_and_execute_tool(tool_call: dict) -> dict:
+    """ Validate the tool call arguments and execute the corresponding financial tool. """
+    
+    validated_tool_call = validate_tool_arguments(tool_call)
+    return execute_tool(validated_tool_call)
 
 def main() -> None:
     """Run a sample financial question."""
