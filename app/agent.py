@@ -4,9 +4,10 @@ from app.openai_client import (
     create_openai_client,
     get_openai_model,
 )
-
 from app.tool_definitions import get_openai_tools
 import json
+from pydantic import ValidationError
+from app.schemas import ROIInput, ProfitInput, CompoundInterestInput
 
 SYSTEM_INSTRUCTIONS = """
 You are a financial calculation assistant.
@@ -21,6 +22,11 @@ Do not invent calculation results.
 The application will execute the requested tools separately.
 """
 
+TOOL_SCHEMAS = {
+    "calculate_roi": ROIInput,
+    "calculate_profit": ProfitInput,
+    "calculate_compound_interest": CompoundInterestInput,
+}
 
 def send_financial_question(question: str):
     """
@@ -155,6 +161,32 @@ def extract_tool_call(call) -> dict:
         "call_id": call_id,
     }
 
+def validate_tool_arguments(tool_call: dict) -> dict:
+    """
+    Validate OpenAI-generated function arguments using Pydantic.
+
+    Args:
+        tool_call: Extracted tool call containing tool_name,
+                   arguments, and call_id.
+
+    Returns:
+        Dictionary containing validated arguments.
+
+    Raises:
+        ValueError: If the tool name is unsupported.
+        ValidationError: If arguments fail Pydantic validation.
+    """
+    
+    tool_name = tool_call.get("tool_name")
+    arguments = tool_call.get("arguments")
+
+    if tool_name not in TOOL_SCHEMAS:
+        raise ValueError(f"Unsupported tool name: {tool_name}")
+
+    schema = TOOL_SCHEMAS[tool_name]    
+    validated_arguments = schema.model_validate(arguments)          # model_validate() is a Pydantic method that validates the Pydantic model instance.
+
+    return {"tool_name": tool_name, "arguments": validated_arguments.model_dump(), "call_id": tool_call.get("call_id")}       # model_dump() generates a dictionary representation of the model.
 
 def main() -> None:
     """Run a sample financial question."""
