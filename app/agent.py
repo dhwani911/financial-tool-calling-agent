@@ -1,3 +1,5 @@
+import re
+
 from openai import OpenAIError
 
 from app.openai_client import (
@@ -11,16 +13,21 @@ from app.schemas import ROIInput, ProfitInput, CompoundInterestInput
 from app.tools import calculate_roi, calculate_profit, calculate_compound_interest
 
 SYSTEM_INSTRUCTIONS = """
-You are a financial calculation assistant.
+You are a helpful financial calculation assistant.
 
-You have access to financial calculation tools.
+Your responsibilities:
+1. Understand the user's financial questions.
+2. Use the available financial tools for calculations.
+3. Never invent or estimate calculation results when a tool is available.
+4. Explain calculation results clearly and accurately.
+5. Present percentages with the % symbol.
+6. Present monetary values with appropriate currency formatting
+   when the currency is known.
+7. Explain the result in simple, user-friendly language.
+8. Do not claim to provide professional financial advice.
+9. If a required input is missing, ask the user for clarification.
 
-Use the available tools when the user requests a financial
-calculation.
-
-Do not invent calculation results.
-
-The application will execute the requested tools separately.
+Always base numerical answers on the actual tool results.
 """
 
 TOOL_SCHEMAS = {
@@ -78,8 +85,9 @@ def get_function_calls(response) -> list:
     An empty list means no function call was requested.
     """
 
-    output_items = getattr(response, "output", None) or []
-
+    output_items = getattr(response, "output", None) or []          
+    
+    # The function/tool or called has type = "function_call", rest other tools carries type="function" in response of OpenAI api
     function_calls = [
         item
         for item in output_items
@@ -220,7 +228,7 @@ def execute_tool(tool_call: dict) -> dict:
         raise ValueError(f"Arguments for tool '{tool_name}' must be a dictionary.")
     
     function = TOOL_REGISTRY[tool_name]
-    result = function(**arguments)
+    result = function(**arguments)              # Execute the function/tool extracted from openAI LLM response whose type="function_call"
     
     return {"tool_name": tool_name, "result": result, "call_id": call_id}
 
@@ -229,6 +237,77 @@ def validate_and_execute_tool(tool_call: dict) -> dict:
     
     validated_tool_call = validate_tool_arguments(tool_call)
     return execute_tool(validated_tool_call)
+
+def build_tool_outputs(tool_results: list[dict]) -> list[dict]:
+    """Convert executed tool results into Responses API input items."""
+    
+    outputs = []
+    
+    for tool_result in tool_results:
+        call_id = tool_result.get("call_id")
+        
+        if not isinstance(call_id, str) or not call_id.strip():
+            raise ValueError("Tool result is missing a valid call ID.")
+    
+        if "result" not in tool_result:
+            raise ValueError("Tool result is missing the result value.")
+        
+        outputs.append({
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": json.dumps(tool_result["result"]),
+        })
+        
+    return outputs
+
+def send_tool_outputs(previous_response_id: str, tool_results: list[dict]) -> None: 
+    """
+    Send the executed tool results back to OpenAI.
+
+    Args:
+        previous_response_id: The ID of the previous OpenAI response.
+        tool_results: List of executed tool results.
+    """
+
+    if not previous_response_id:
+        raise ValueError("Previous response ID is required.")
+    
+    outputs = build_tool_outputs(tool_results)
+    if not outputs:
+        raise ValueError("At least one tool result is required.")
+    
+    client = create_openai_client()
+    model = get_openai_model()
+
+    response = client.responses.create(
+        model=model,
+        instructions = SYSTEM_INSTRUCTIONS,
+        previous_response_id=previous_response_id,
+        input=outputs,
+        tools=get_openai_tools(),
+        tool_choice="auto",
+    )
+
+    return response
+
+def generate_final_response(response) ->str:
+    """
+    Extract and return the final user-friendly response from OpenAI.
+    """
+    if response.status != "completed":
+        raise RuntimeError(
+            f"OpenAI response is not completed. Status: {response.status}"
+        )
+
+    final_answer = response.output_text
+
+    if not isinstance(final_answer, str) or not final_answer.strip():
+        raise RuntimeError("OpenAI returned an empty final response.")
+
+    # Remove Markdown bold and italic markers
+    final_answer = re.sub(r"\*{1,3}", "", final_answer)
+
+    return final_answer.strip()
 
 def main() -> None:
     """Run a sample financial question."""
@@ -242,18 +321,40 @@ def main() -> None:
         return
 
     try:
+        # Send question to OpenAI
         response = send_financial_question(question)
 
-        display_response(response)
+        # Detect function calls
+        function_calls = get_function_calls(response)
+        if not function_calls:
+            print("\nAssistant:", response.output_text)
+            return 
+        
+        # Extract function calls
+        extracted_calls = extract_tool_calls(response)
+        
+        # Validate and execute tools
+        tool_results = []
+        
+        for tool_call in extracted_calls:
+            print(f"\nExecuting tool: {tool_call['tool_name']}")
+            
+            result = validate_and_execute_tool(tool_call)
+            print("Tool result:", result['result'])            
+            tool_results.append(result)
+        
+        # Send execution results back to OpenAI        
+        final_response = send_tool_outputs(previous_response_id=response.id, tool_results=tool_results)
+        
+        # Generate and display final response
+        answer = generate_final_response(final_response)
 
-    except OpenAIError as exc:
-        print(f"\nOpenAI API request failed: {exc}")
+        print("\nFinancial Assistant:")
+        print(answer)
 
-    except RuntimeError as exc:
-        print(f"\nConfiguration error: {exc}")
+    except Exception as exc:
+        print(f"\nError: {exc}")
 
-    except ValueError as exc:
-        print(f"\nInput error: {exc}")
 
 def extract_tool_calls(response) -> list[dict]:
     """

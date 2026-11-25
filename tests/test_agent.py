@@ -1,11 +1,12 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import patch, Mock
 
 import pytest
 from pydantic import ValidationError
 
 from app.agent import get_function_calls, extract_tool_calls, extract_tool_call, validate_tool_arguments, \
-    validate_and_execute_tool
+    validate_and_execute_tool, build_tool_outputs, send_tool_outputs
 
 
 def test_detect_single_function_call():
@@ -439,3 +440,111 @@ def test_execute_unexpected_arguments():
 
     with pytest.raises(ValidationError):
         validate_and_execute_tool(tool_call)
+        
+def test_build_tool_outputs_single_result():
+    tool_results = [
+        {
+            "tool_name": "calculate_roi",
+            "result": 25.0,
+            "call_id": "call_123",
+        }
+    ]
+
+    outputs = build_tool_outputs(tool_results)
+
+    assert outputs == [{'type': 'function_call_output', 'call_id': 'call_123', 'output': '25.0'}]
+    
+def test_build_tool_outputs_multiple_results():
+    tool_results = [
+        {
+            "tool_name": "calculate_roi",
+            "result": 25.0,
+            "call_id": "call_123",
+        },
+        {
+            "tool_name": "calculate_profit",
+            "result": 20000,
+            "call_id": "call_456",
+        },
+    ]
+
+    outputs = build_tool_outputs(tool_results)
+
+    assert len(outputs) == 2
+    assert outputs[0]["call_id"] == "call_123"
+    assert outputs[0]["output"] == "25.0"
+    assert outputs[1]["call_id"] == "call_456"
+    assert outputs[1]["output"] == "20000"
+    
+def test_build_tool_outputs_missing_call_id():
+    tool_results = [
+        {
+            "tool_name": "calculate_roi",
+            "result": 25.0,
+            "call_id": "",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="call ID"):
+        build_tool_outputs(tool_results)
+        
+def test_build_tool_outputs_missing_result():
+    tool_results = [
+        {
+            "tool_name": "calculate_roi",
+            "call_id": "call_123",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="result value"):
+        build_tool_outputs(tool_results)
+        
+def test_send_tool_outputs_empty_results():
+    with pytest.raises(ValueError, match="At least one"):
+        send_tool_outputs("resp_123", [])
+
+def test_send_tool_outputs_missing_response_id():
+    with pytest.raises(ValueError, match="Previous response ID"):
+        send_tool_outputs("", [
+            {
+                "tool_name": "calculate_roi",
+                "result": 25.0,
+                "call_id": "call_123",
+            }
+        ])
+        
+def test_send_tool_outputs_calls_responses_api():
+    mock_client = Mock()
+    mock_response = Mock()
+
+    mock_client.responses.create.return_value = mock_response
+
+    tool_results = [
+        {
+            "tool_name": "calculate_roi",
+            "result": 25.0,
+            "call_id": "call_123",
+        }
+    ]
+
+    with patch(
+        "app.agent.create_openai_client",
+        return_value=mock_client,
+    ), patch(
+        "app.agent.get_openai_model",
+        return_value="test-model",
+    ), patch(
+        "app.agent.get_openai_tools",
+        return_value=[],
+    ):
+        result = send_tool_outputs("resp_previous_123", tool_results)
+
+    assert result == mock_response
+
+    mock_client.responses.create.assert_called_once()
+
+    kwargs = mock_client.responses.create.call_args.kwargs
+
+    assert kwargs["previous_response_id"] == "resp_previous_123"
+    assert kwargs["tool_choice"] == "auto"
+    assert kwargs["input"] == [{'type': 'function_call_output', 'call_id': 'call_123', 'output': '25.0'}]
