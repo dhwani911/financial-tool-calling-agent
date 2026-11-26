@@ -70,7 +70,7 @@ def send_financial_question(question: str):
         instructions=SYSTEM_INSTRUCTIONS,
         input=question.strip(),
         tools=tools,
-        tool_choice="required",
+        tool_choice="auto",                   
     )
 
     return response
@@ -238,6 +238,7 @@ def validate_and_execute_tool(tool_call: dict) -> dict:
     validated_tool_call = validate_tool_arguments(tool_call)
     return execute_tool(validated_tool_call)
 
+
 def build_tool_outputs(tool_results: list[dict]) -> list[dict]:
     """Convert executed tool results into Responses API input items."""
     
@@ -283,7 +284,7 @@ def send_tool_outputs(previous_response_id: str, tool_results: list[dict]) -> No
         model=model,
         instructions = SYSTEM_INSTRUCTIONS,
         previous_response_id=previous_response_id,
-        input=outputs,
+        input=outputs,                                      # Send executed tool results back to OpenAI as "inputs" for further processing and response generation.
         tools=get_openai_tools(),
         tool_choice="auto",
     )
@@ -309,6 +310,53 @@ def generate_final_response(response) ->str:
 
     return final_answer.strip()
 
+def run_agent(question: str, max_iterations: int = 5) -> str:
+    """
+    Run the financial agent until OpenAI returns a final response or the maximum number of iterations is reached.
+    This supports multiple tool calls and multiple tool calling rounds.
+    """
+    
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("Question cannot be empty.")
+    if max_iterations < 1:
+        raise ValueError("max_iterations must be at least 1.")
+    
+    # Send the initial question to OpenAI
+    response = send_financial_question(question)
+    
+    iteration = 0
+    while True:
+        # Detect function calls in the OpenAI response
+        tool_calls = extract_tool_calls(response)
+
+        # If no tool calls are detected, return the final response
+        if not tool_calls:
+            return generate_final_response(response)
+        
+        # Prevent infinite tool-calling loops
+        if iteration >= max_iterations:
+            raise RuntimeError(
+                f"Agent exceeded maximum tool-calling rounds: "
+                f"{max_iterations}"
+            )
+        print(f"\nTool-calling round: {iteration + 1}")
+        
+        # Validate and execute each tool call
+        tool_results = []
+        for tool_call in tool_calls:
+            print(f"\nExecuting tool: {tool_call['tool_name']}")
+            result = validate_and_execute_tool(tool_call)
+            print("Tool result:", result['result'])
+            tool_results.append(result)
+        
+        # Send all tool results back to OpenAI  
+        response = send_tool_outputs(
+            previous_response_id=response.id,
+            tool_results=tool_results
+        )
+        iteration += 1
+        
+
 def main() -> None:
     """Run a sample financial question."""
 
@@ -321,39 +369,14 @@ def main() -> None:
         return
 
     try:
-        # Send question to OpenAI
-        response = send_financial_question(question)
+        final_answer = run_agent(question)       
 
-        # Detect function calls
-        function_calls = get_function_calls(response)
-        if not function_calls:
-            print("\nAssistant:", response.output_text)
-            return 
-        
-        # Extract function calls
-        extracted_calls = extract_tool_calls(response)
-        
-        # Validate and execute tools
-        tool_results = []
-        
-        for tool_call in extracted_calls:
-            print(f"\nExecuting tool: {tool_call['tool_name']}")
-            
-            result = validate_and_execute_tool(tool_call)
-            print("Tool result:", result['result'])            
-            tool_results.append(result)
-        
-        # Send execution results back to OpenAI        
-        final_response = send_tool_outputs(previous_response_id=response.id, tool_results=tool_results)
-        
-        # Generate and display final response
-        answer = generate_final_response(final_response)
-
-        print("\nFinancial Assistant:")
-        print(answer)
+        print("\n========== FINAL ANSWER ==========")
+        print(f"\nFinancial Assistant:\n{final_answer}")
+        print("==================================")
 
     except Exception as exc:
-        print(f"\nError: {exc}")
+        print(f"\nAgent error: {exc}")
 
 
 def extract_tool_calls(response) -> list[dict]:
