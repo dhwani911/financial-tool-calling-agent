@@ -41,4 +41,5 @@ typer==0.29.3
 typing==3.7.4.3
 typing-inspection==0.4.4
 typing_extensions==4.16.0
+uv==0.13.10
 uvicorn==0.54.0
